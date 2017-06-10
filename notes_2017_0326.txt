@@ -1,0 +1,96 @@
+############ multiplot ############
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  library(grid)
+
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+
+  numPlots = length(plots)
+
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                    ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+
+ if (numPlots==1) {
+    print(plots[[1]])
+
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+################
+
+library("phyloseq") #packageVersion("phyloseq")
+library("ggplot2") #packageVersion("ggplot2")
+library("ape") #packageVersion("ape")
+setwd("~/Desktop/2017_0326/")
+
+taxdata <- read.csv("table_tax.csv", header = TRUE, row.names = 1) # reads csv file into data.frame with row names in column 1
+taxmat <- as.matrix.data.frame(taxdata) # reads data.frame into matrix without converting to numbers
+otudata <- read.csv("table_otu.csv", header = TRUE, row.names = 1)
+otumat <- as.matrix.data.frame(otudata)
+mapdata <- read.csv("table_map.csv", header = TRUE, row.names = 1)
+# mapmat <- as.matrix.data.frame(mapdata)
+OTU = otu_table(otumat, taxa_are_rows = TRUE)
+TAX = tax_table(taxmat)
+MAP = sample_data(data.frame(mapdata)) #######
+TREE = read.tree("Rep_Set_tree.tree")
+physeq = phyloseq(OTU, TAX, MAP, TREE)
+
+theme_set(theme_bw())
+pal = "Paired"
+scale_colour_discrete <-  function(palname=pal, ...){
+  scale_colour_brewer(palette=palname, ...)
+}
+scale_fill_discrete <-  function(palname=pal, ...){
+  scale_fill_brewer(palette=palname, ...)
+}
+
+physeqR <- physeq # Save original version of un-manipulated data
+physeq <- prune_samples(sample_sums(physeq) > 5000, physeq) # keep only samples with >5000 reads
+
+clean2 <- subset_samples(physeq, !MealLot1%in%c("S-N3095","15B52072")) # Remove samples from contaminated blood lots
+clean <- subset_samples(clean2, !MealLot2%in%c("S-N3095","15B52072")) # Remove samples from contaminated blood lots
+ILF <- subset_samples(clean, SampleSite%in%c("ILF","Albumen")) # Only look at ILF and albumen samples
+
+
+
+blank <- subset_samples(physeq, Treatment%in%c("SeqControl"))
+blankGam <- subset_taxa(blank, Class%in%c("Gammaproteobacteria"))
+plot_bar(blankGam,fill="Order")
+# # # Halomonas up to 2000 reads/sample
+
+ILFselect <- subset_taxa(ILF, Order%in%c("Oceanospirillales","Alteromonadales"))
+plot_bar(ILFselect,fill="Family")
+ILF2 <- subset_samples(ILFselect, Treatment%in%c("1Feed","2Feeds"))
+plot_bar(ILF2,fill="Family")
+# # # many samples have >10000 sequences of Halomonadaceae
+
+transformILF <- transform_sample_counts(ILF, function(OTU) OTU/sum(OTU) ) # transform raw reads to percentage
+ILFselect <- subset_taxa(transformILF, Order%in%c("Oceanospirillales","Alteromonadales"))
+plot_bar(ILFselect,fill="Family")
+ILF2 <- subset_samples(ILFselect, Treatment%in%c("1Feed","2Feeds"))
+plot_bar(ILF2,fill="Family")
+# # # many samples still have high % Halomonadaceae
+
+ILFjuv <- subset_samples(transformILF, Treatment%in%c("1Feed","2Feeds"))
+plot_bar(ILFjuv,fill="Class")
+
+
+

@@ -1,0 +1,54 @@
+# To save space on HardDrive, I have stopped copying all files between process-date folders. Instead, one folder labeled "DataFiles" should be moved between processing folders. notes will be labeled with date and kept in a "Compiled_Rnotes" folder #
+
+library("phyloseq") #packageVersion("phyloseq")
+library("ggplot2") #packageVersion("ggplot2")
+library("ape") #packageVersion("ape")
+library("RColorBrewer")
+source("~/Masters/R_tools/taxa_summary",local=TRUE) # load fast_melt function
+
+setwd("~/Desktop/2017_0509/")
+
+system.time(load("DataFiles/physeq_2017_0509.RData")) # Use to re-load saved phyloseq data object
+
+sample_data(physeq) <- sample_data(data.frame(read.csv("DataFiles/table_map.csv",header=TRUE,row.names=1))) # use if map file has been modified
+
+
+########## Pre-process data ##########
+ntc<-subset_samples(physeq,Treatment=="SeqControl")
+ntcT<-transform_sample_counts(ntc, function(x) x/sum(x)) # get abundance in %
+
+# Remove 'noise' OTus 
+mdt = fast_melt(ntcT)
+prevdt = mdt[, list(Prevalence = sum(count > 0), 
+  TotalCounts = sum(count),
+  MinCounts = min(count),
+  MaxCounts = max(count)),
+  by = TaxaID] # make simple table listing 'SampleID, TaxaID, total count, Max, and Min' 
+prevdt$s = prevdt$M
+keepTaxa = prevdt[(Prevalence >= 2 & MaxCounts > .01), TaxaID] # Make list of OTUs to keep (cut-off determined 3/28 from histogram analysis)
+ntcPr = prune_taxa(keepTaxa, ntc) # Prune taxa from list (keep taxa listed)
+ntcF<-tax_glom(ntcPr,taxrank="Family") # glom by Family
+
+most_abundant_taxa <- sort(taxa_sums(ntcF), TRUE)[1:10] # Identify 10 most abundant taxa
+ntcClip = prune_taxa(names(most_abundant_taxa),ntcF)# Prune taxa from list (keep taxa listed)
+tax_table(ntcClip)[1:10, 1:5] # used to look-up otu ID for Halomonadaceae
+conHal=prune_taxa("denovo65689",ntcF) # isolate just Halomonadaceae
+# Halomonadaceae does increase with decreasing [DNA]
+
+
+########## Halomonas scatter plot ##########
+library("data.table") #packageVersion("data.table")
+
+physeqG <- tax_glom(physeq, taxrank = "Family") # agglomerate OTUs by family
+trim<-subset_taxa(physeqG, Family=="Halomonadaceae") # make phyloseq object with only Halomonadaceae
+sdt = data.table(as(sample_data(physeqG), "data.frame"), ChoiceReads = get_sample(physeqG,taxa_names(trim)), keep.rownames = TRUE) 
+sample_data(physeqG)$ChoiceReads = factor( get_variable(sdt, "ChoiceReads") ) # merge new column into original phyloseq object
+sample_variables(physeqG) # confirm new column has been added
+
+plot(get_variable(physeqG, "uL_for_20ng"),get_variable(physeqG, "ChoiceReads"))
+
+
+transform(get_variable(physeqG)$PostPCRDNA_ng_uL,char=as.numeric(get_variable(physeqG)$PostPCRDNA_ng_uL))
+
+
+get_variable(physeqG)$test <- with(get_variable(physeqG),ifelse(as.numeric(PostPCRDNA_ng_uL)>0,as.numeric(PostPCRDNA_ng_uL),0))

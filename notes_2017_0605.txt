@@ -1,0 +1,174 @@
+outlier3<-subset_samples(physeq,!DateHatch%in%c("2014_0914","2014_0911"))
+outlier2<-subset_samples(outlier3,!sample_names(physeq)%in%c("A1dF100913EM.iD39","A4dF101213EM.iD73"))
+outlier<-subset_samples(outlier2, !DateSacrifice=="2015_0830")
+physeq10<-subset_samples(outlier,sample_sums(outlier)>=10000) # keep samples with >=10000 reads
+physeqT<-transform_sample_counts(physeq10, function(x) x/sum(x)) # transform raw counts to fraction
+
+### Remove Halomonas-contaminated samples ###
+pHalo<-subset_taxa(physeqT, Family=="Halomonadaceae") # make phyloseq object with only Halomonadaceae
+physeqH<-subset_samples(physeq10,sample_sums(pHalo)<=.01) # keep samples with <= 1% Halomonadaceae
+### Remove Anaplasma-contaminated samples ###
+pAna<-subset_taxa(physeqT,Family=="Anaplasmataceae") # make phyloseq object with only Anaplasmataceae
+physeqAn<-subset_samples(physeqH,sample_sums(pAna)<=.01) # keep samples with <= 1% Anaplasmataceae
+
+hirudo<-subset_samples(physeqAn,Source%in%c("BBEZ","UConn","USA")) # keep hirudo samples (exclude Macrobdella)
+ilf<-subset_samples(hirudo,SampleSite=="ILF") # keep ILF samples (exclude albumen, intestinum, water, etc)
+
+### HISTOGRAMS ——> Trim low prevalence/low count OTUs ###
+### Histogram of reads per sample ###
+sdt = data.table(as(sample_data(ilf), "data.frame"), TotalReads = sample_sums(physeq10), keep.rownames = TRUE) # define new column for sample reads sum in sample data table (sdt)
+setnames(sdt, "rn", "SampleID") # rename 'rn' column to 'SampleID'
+pSeqDepth = ggplot(sdt, aes(TotalReads)) + 
+  geom_histogram() + 
+  #facet_wrap(~Age) +    
+  ggtitle("Sequencing Reads per Sample") + 
+  #xlim(0, 50000) +
+  labs(y="Sample Count")
+pSeqDepth # plot histogram
+
+### Geometric calculations of reads ###
+mean(sample_sums(ilf)) # Calculate mean reads count per sample
+sdt[, min(TotalReads)] # determine the minimum number of reads/sample
+sdt[, max(TotalReads)] # determine the maximum number of reads/sample
+
+### Histogram of reads per OTU  ###
+mdt = fast_melt(ilf)
+prevdt = mdt[, list(Prevalence = sum(count > 0), 
+   TotalCounts = sum(count)),
+   by = TaxaID] # make simple table listing 'TaxaID, Prevalence, and TotalCounts' 
+
+ggplot(prevdt, aes(Prevalence)) + 
+   geom_histogram() + 
+   ylim(0,100) +
+   ggtitle("Histogram of Taxa Prevalence") # make histogram of OTU prevalence data
+
+### Histogram of prevalence per OTU ###
+ggplot(prevdt, aes(TotalCounts)) + 
+   geom_histogram() + 
+   ggtitle("Histogram of Total Counts per OTU") # make histogram of reads count per OTU
+
+### Scatter Plot of OTUs removed by limiting TotalCount threshold ###
+taxcumsum = prevdt[, .N, by = TotalCounts] # sort tdt table by TotalCounts
+setkey(taxcumsum, TotalCounts)
+taxcumsum[, CumSum := cumsum(N)]
+pCumSum = ggplot(taxcumsum, aes(TotalCounts, CumSum)) + 
+   geom_point() +
+   xlab("Filtering Threshold, Minimum Total Counts") +
+   ylab("OTUs Filtered") +
+   ggtitle("OTUs that would be filtered at each minimum count threshold")
+pCumSum + xlim(0, 50) # Calculate how many OTUs would be filtered out at different minimum count thresholds
+
+### Scatter Plot of OTUs removed by limiting Prevalence threshold ###
+prevcumsum = prevdt[, .N, by = Prevalence] # sort prevdt table by Prevalence
+setkey(prevcumsum, Prevalence)
+prevcumsum[, CumSum := cumsum(N)]
+pPrevCumSum = ggplot(prevcumsum, aes(Prevalence, CumSum)) + 
+   geom_point() +
+   xlab("Filtering Threshold, Prevalence") +
+   ylab("OTUs Filtered") +
+   ggtitle("OTUs that would be filtered vs. the minimum count threshold")
+pPrevCumSum + xlim(0,50) # Calculate how many OTUs would be filtered out at different minimum prevalence thresholds
+
+### Scatter Plot of TotalCounts and Prevalence ###
+ggplot(prevdt, aes(Prevalence, TotalCounts)) + 
+  geom_point(size = 4, alpha = 0.75) + 
+  #xlim(0,100) +
+  scale_y_log10() # Plot total counts vs. prevalence of OTUs
+
+addPhylum = unique(copy(mdt[, list(TaxaID, Phylum)]))
+# Join by TaxaID
+setkey(prevdt, TaxaID)
+setkey(addPhylum, TaxaID)
+prevdt <- addPhylum[prevdt]
+showPhyla = prevdt[, sum(TotalCounts), by = Phylum][order(-V1)][1:9]$Phylum
+setkey(prevdt, Phylum)
+ggplot(prevdt[showPhyla], 
+   mapping = aes(Prevalence, TotalCounts, color = Phylum)) + 
+   geom_point(size = 4, alpha = 0.75) + 
+   scale_y_log10()
+
+# # # Determined that OTU curve starts to level ~10 reads. Will use 100 as TotalCounts cut-off. n for experiments is always at least 3, so will use this as Prevalence cut-off
+
+keepTaxa = prevdt[(Prevalence >= 3 & TotalCounts > 100), TaxaID] # Make list of OTUs to keep
+
+### TRIM TAXA + SAMPLES (TRANSFORM) ###
+ilfT<-transform_sample_counts(ilf, function(x) x/sum(x)) # transform raw counts to fraction
+ilfTk<-prune_taxa(keepTaxa, ilfT) # Prune taxa from list
+
+compareT<-subset_samples(ilfTk,test%in%c("+Adults","+Water","+Rock","Adult","Juvenile","Hatch"))
+interactT<-subset_samples(ilfTk,test%in%c("+Adults","+Water","+Rock")) # subset samples to only treated juveniles 
+controlT<-subset_samples(ilfTk,test%in%c("Adult","Juvenile","Hatch")) # subset samples for treatment control set
+ahT<-subset_samples(controlT,Age%in%c("A","H")) # keep adult and hatchling samples
+ajT<-subset_samples(controlT,Age%in%c("A","J")) # keep adult and juvenile samples
+jhT<-subset_samples(controlT,Age%in%c("J","H")) # keep juvenile and hatchling samples
+
+### TRIM TAXA + SAMPLES (NO TRANSFORM) ###
+ilfCk = prune_taxa(keepTaxa, ilf) # Prune taxa from list
+
+interactC<-subset_samples(ilfCk, test%in%c("+Adults","+Water","+Rock")) # subset samples to only treated juveniles 
+controlC<-subset_samples(ilfCk, test%in%c("Adult","Juvenile","Hatch")) # subset samples for treatment control set
+ahC<-tax_glom(subset_samples(controlC,Age%in%c("A","H")),taxrank="Genus") # keep adult and hatchling samples
+ajC<-tax_glom(subset_samples(controlC,Age%in%c("A","J")),taxrank="Genus") # keep adult and juvenile samples
+jhC<-tax_glom(subset_samples(controlC,Age%in%c("J","H")),taxrank="Genus") # keep juvenile and hatchling samples
+
+ahC<-subset_samples(controlC,Age%in%c("A","H")) # keep adult and hatchling samples
+ajC<-subset_samples(controlC,Age%in%c("A","J")) # keep adult and juvenile samples
+jhC<-subset_samples(controlC,Age%in%c("J","H")) # keep juvenile and hatchling samples
+
+
+library("DESeq2") #packageVersion("DESeq2") # The DESeq2 model internally corrects for library size, so transformed or normalized values such as counts scaled by library size should not be used as input. #
+library("dplyr") #packageVersion("dplyr")
+library("structSSI") #packageVersion("structSSI")
+
+### log2fold Change ###
+gl <- c(ahC,ajC,jhC) # comparison groups (by age)
+oldotu <- c() # create new empty list
+
+for (group in c(gl)){
+    kostic <- group # assign data to be processed
+    namef <- capture.output(cat(levels(head(sample_data(kostic)$Age, 10)),sep=" vs. ")) # add column specifying comparison
+    diagddsraw = phyloseq_to_deseq2(kostic, ~ Age) # assign variable for comparing groups
+    
+    # calculate geometric means prior to estimate size factors
+    gm_mean = function(x, na.rm=TRUE){exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))}
+    geoMeans = apply(counts(diagddsraw), 1, gm_mean)
+    diagdds = estimateSizeFactors(diagddsraw, geoMeans = geoMeans)
+    diagdds2 = DESeq(diagdds, fitType="local")
+    
+    res = results(diagdds2)
+    res = res[order(res$padj, na.last=NA), ]
+    alpha = 0.001
+    sigtab = res[(res$padj < alpha), ]
+    sigtab = cbind(as(sigtab, "data.frame"), as(tax_table(kostic)[rownames(sigtab), ], "matrix"))
+    sigtabgen = subset(sigtab, !is.na(Genus))
+    
+    resSig <- subset(sigtab,padj<0.05)
+    resSig$TestGroup <- namef
+    
+    # Make plot
+    dp = ggplot(sigtabgen, aes(y=Genus, x=log2FoldChange, color=Class)) + 
+        geom_vline(xintercept = 0.0, color = "gray", size = 0.5) + 
+        geom_point(size=6, alpha=0.75) + 
+        theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5)) + 
+        ggtitle("log2fold change") # add title
+    dp
+    
+    # print to output file
+    write.table(as.data.frame(resSig),file="stats.csv",append=TRUE, sep=",")
+    
+    log2lim = 5 # cut-off (absolute) value for log2fc
+    newotu = resSig[(abs(res$log2FoldChange) > log2lim), ] # isolate any otus with log2fc > lim
+    oldotu <- rbind(oldotu, newotu) # append isolated otus to list
+}
+unotu <- unique(oldotu) # list of unique genera with significant log2fc
+
+########## Find OTUs to BLAST for original taxa file ##########
+unotu$OTU<-rownames(unotu) # make rowname (OTU name) a new column
+# Make a new column listing OTUs without Genus ID
+unotu$check <- with(unotu, 
+  ifelse(Order=="", "fucked",
+  ifelse(Genus=="", OTU, 
+  "good")))
+unique(unotu$check) # print list of OTUs to BLAST
+write.table(as.data.frame(unique(unotu$check)),file="OTUs_to_BLAST.csv",append=TRUE, sep=",")
+########## Find OTUs to BLAST for original taxa file ##########

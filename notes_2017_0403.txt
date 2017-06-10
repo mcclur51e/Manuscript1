@@ -1,0 +1,228 @@
+# To save space on HardDrive, I have stopped copying all files between process-date folders. Instead, one folder labeled "DataFiles" should be moved between processing folders. notes will be labeled with date and kept in a "Compiled_Rnotes" folder #
+
+library("phyloseq") #packageVersion("phyloseq")
+library("ggplot2") #packageVersion("ggplot2")
+library("ape") #packageVersion("ape")
+setwd("~/Desktop/2017_0403/")
+
+mapdata <- read.csv("table_map.csv", header = TRUE, row.names = 1)
+MAP = sample_data(data.frame(mapdata)) 
+# Add new column to map data. 'test' column will be used for juvenile interaction comparisons
+MAP$test <- with(MAP, 
+  ifelse(Treatment=="1Feed", "JControl", 
+  ifelse(Treatment=="2Feeds", "JControl", 
+  ifelse(Treatment=="USAjuv", "wAdult", 
+  ifelse(Treatment=="USAadult", "wAdult",  
+  ifelse(Treatment=="BBEZadults", "wAdult",
+  ifelse(Treatment=="USArock", "wRock",
+  ifelse(Treatment=="UnfilteredWater", "dirtyWater", 
+as.character(Treatment)))))))))
+
+system.time(load("DataFiles/physeq_2017_0403.RData")) # Use to re-load saved phyloseq data object
+
+# Pre-process data
+source("~/Masters/R_tools/taxa_summary",local=TRUE) # load fast_melt function
+
+physeq5 <- prune_samples(sample_sums(physeq) > 5000, physeq) # keep only samples with > 5000 sequences
+
+# Remove 'noise' OTus 
+mdt = fast_melt(physeq5)
+prevdt = mdt[, list(Prevalence = sum(count > 0), 
+   TotalCounts = sum(count)),
+   by = TaxaID] # make simple table listing 'SampleID, TaxaID, and count' 
+
+keepTaxa = prevdt[(Prevalence >= 3 & TotalCounts > 100), TaxaID] # Make list of OTUs to keep (cut-off determined 3/28 from histogram analysis)
+physeqPr = prune_taxa(keepTaxa, physeq5) # Prune taxa from list
+
+ILF <- subset_samples(physeqPr, SampleSite%in%c("ILF","Albumen")) # Only look at ILF and albumen samples
+clean0 <- subset_samples(ILF, !MealLot1%in%c("S-N3095","15B52072")) # Remove samples from contaminated blood lots
+clean <- subset_samples(clean0, !MealLot2%in%c("S-N3095","15B52072")) # Remove samples from contaminated blood lots
+old <- subset_samples(clean, Age%in%c("A")) # subset the adults 
+young <- subset_samples(clean, !Age%in%c("A")) # subset the cocoons, hatchlings, and juveniles
+o.con <- subset_samples(old, !Treatment%in%c("AnaFeed","MacroAdults")) # control group includes all adults except those fed Anaplasma and Macrobdella
+y.con <- subset_samples(young, Treatment%in%c("Control","Cocoon","1Feed","2Feeds")) # control juveniles, hatchlings, and cocoons
+hatch <- subset_samples(y.con,!DaH%in%c(7))
+control <- merge_phyloseq(o.con, hatch) # Create master control group
+
+# repeat 'noise' removal
+mdt = fast_melt(control)
+prevdt = mdt[, list(Prevalence = sum(count > 0), 
+                     TotalCounts = sum(count)),
+              by = TaxaID] # make simple table listing 'SampleID, TaxaID, and count' 
+ 
+keepTaxa = prevdt[(Prevalence >= 3 & TotalCounts > 100), TaxaID] # Make list of OTUs to keep (cut-off determined 3/28 from histogram analysis)
+controlPr = prune_taxa(keepTaxa, control) # Prune taxa from list
+
+controlG <- tax_glom(controlPr, taxrank="Genus") # glom OTUs at the Genus level
+
+adult <- subset_samples(controlG, Age=="A") # subset out adults
+juv <- subset_samples(controlG, Age=="J") # subset out juveniles
+hatch <- subset_samples(controlG, Age=="H") # subset out hatchlings
+coc <- subset_samples(controlG, Age=="C") # subset out cocoons
+
+ac <- subset_samples(controlG, Age%in%c("A","C")) # create group to compare adults and cocoons
+ah <- subset_samples(controlG, Age%in%c("A","H")) # create group to compare adults and hatchlings
+aj <- subset_samples(controlG, Age%in%c("A","J")) # create group to compare adults and juveniles
+jh <- subset_samples(controlG, Age%in%c("J","H")) # create group to compare juveniles and hatchlings
+
+########## Significance Testing ##########
+library("DESeq2") #packageVersion("DESeq2")
+library("dplyr") #packageVersion("dplyr")
+library("structSSI") #packageVersion("structSSI")
+
+gl <- c(ac,ah,aj,jh)
+
+for (group in c(gl)){
+  namef <- capture.output(cat(levels(head(sample_data(group)$Age, 10)),sep=""))
+  pslog <- transform_sample_counts(group, function(x) log(1 + x))
+  diagddsraw = phyloseq_to_deseq2(group, ~ Age) # assign variable for comparing groups
+
+  # calculate geometric means prior to estimate size factors
+  gm_mean = function(x, na.rm=TRUE){exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))}
+  geoMeans = apply(counts(diagddsraw), 1, gm_mean)
+  diagdds = estimateSizeFactors(diagddsraw, geoMeans = geoMeans)
+  diagdds2 = DESeq(diagdds, fitType="local")
+
+  ps_dds <- diagdds2
+  varianceStabilizingTransformation(ps_dds, blind = TRUE, fitType = "parametric")
+
+  ps_dds <- estimateSizeFactors(ps_dds, geoMeans=geoMeans)
+  ps_dds <- estimateDispersions(ps_dds)
+  abund <- getVarianceStabilizedData(ps_dds)
+
+  short_names <- substr(rownames(abund), 1, 5)%>%
+    make.names(unique = TRUE)
+  rownames(abund) <- short_names
+
+  el <- phy_tree(pslog)$edge
+  el0 <- el
+  el0 <- el0[nrow(el):1, ]
+  el_names <- c(short_names, seq_len(phy_tree(pslog)$Nnode))
+  el[, 1] <- el_names[el0[, 1]]
+  el[, 2] <- el_names[as.numeric(el0[, 2])]
+  unadj_p <- treePValues(el, abund, sample_data(pslog)$Age)
+
+  hfdr_res <- hFDR.adjust(unadj_p, el, .75)
+#  summary(hfdr_res)
+
+  options(width=100)
+  tax <- tax_table(pslog)[, c("Family", "Genus")] %>%
+    data.frame()
+  #tax$seq <- short_names
+  tax$TestGrup <- namef
+
+  hfdr_res@p.vals$seq <- rownames(hfdr_res@p.vals)
+  toot <- tax %>% left_join(hfdr_res@p.vals) %>% arrange(adjp) %>% head(50)
+  write.table(as.data.frame(toot),file="out.csv",append=TRUE, sep=",")
+	  
+}
+########## Significance Testing ##########
+
+########## log2fold Change ##########
+library("ggplot2") #packageVersion("ggplot2")
+library("DESeq2") #packageVersion("DESeq2")
+# The DESeq2 model internally corrects for library size, so transformed or normalized values such as counts scaled by library size should not be used as input. #
+
+gl <- c(ac,ah,aj,jh)
+
+oldotu <- c()
+
+for (group in c(gl)){
+  kostic <- group # assign data to be processed
+  namef <- capture.output(cat(levels(head(sample_data(kostic)$Age, 10)),sep=""))
+  diagddsraw = phyloseq_to_deseq2(kostic, ~ Age) # assign variable for comparing groups
+
+# calculate geometric means prior to estimate size factors
+  gm_mean = function(x, na.rm=TRUE){exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))}
+  geoMeans = apply(counts(diagddsraw), 1, gm_mean)
+  diagdds = estimateSizeFactors(diagddsraw, geoMeans = geoMeans)
+  diagdds2 = DESeq(diagdds, fitType="local")
+
+  res = results(diagdds2)
+  res = res[order(res$padj, na.last=NA), ]
+  alpha = 0.01
+  sigtab = res[(res$padj < alpha), ]
+  sigtab = cbind(as(sigtab, "data.frame"), as(tax_table(kostic)[rownames(sigtab), ], "matrix"))
+  head(sigtab)
+
+  resSig <- subset(sigtab,padj<0.05)
+  resSig$TestGroup <- namef
+
+# print to output file
+  write.table(as.data.frame(resSig),file="stats.csv",append=TRUE, sep=",")
+# write.csv(as.data.frame(resSig), file="05AHresults.csv")
+
+  log2lim = 5 # cut-off (absolute) value for log2fc
+  newotu = resSig[(abs(res$log2FoldChange) > log2lim), ] # isolate any otus with log2fc > lim
+  oldotu <- rbind(oldotu, newotu) # append isolated otus to list
+
+}
+unotu <- unique(oldotu$Genus) # list of unique genera with significant log2fc
+
+########## log2fold Change ##########
+
+########## Box+Whisker Plot ##########
+controlT <- transform_sample_counts(controlG, function(x) x/sum(x)) # get abundance in %
+ssc <- subset_taxa(controlT, Genus%in%c(as.character(unotu)))
+
+ph <- as.character(get_taxa_unique(ssc, "Phylum")) # compile list of phyla to examine
+
+for (p in c(ph)){
+  
+  sscPh <- subset_taxa(ssc, Phylum%in%c(p))
+  if(ntaxa(sscPh)>4){
+    wpng = ntaxa(sscPh) # if more than 4 taxa, plot width will be 1in/taxon
+  } else{
+    wpng = ntaxa(sscPh) + 1 # if less than 4 taxa, plot will be 1in/taxon + 1in
+  }
+
+  dat <- psmelt(sscPh) # create dataframe from phyloseq object
+  dat$Genus <- as.character(dat$Genus) # convert Genus to a character vector from a factor because R
+
+# VERTICAL boxplot + log y-scale + facet by age + x-labels vertical
+  plot <- ggplot(dat, aes(x=Age, y=Abundance, fill=Age)) + 
+    ggtitle(paste(p,"determinant taxa")) + 
+    geom_boxplot() +
+    scale_y_log10() + 
+    facet_grid(~Genus) + 
+    theme(strip.text=element_text(size=rel(.5)),axis.text.x=element_text(angle = -90, hjust = 0)) 
+  
+  ggsave(plot,filename=paste("plot",p,".png",sep=""),width=wpng,height=3)
+}
+########## Box+Whisker Plot ##########
+
+########## Box+Whisker Plot (Adult/Juvenile Interaction Groups) ##########
+# Need to run log2fc first to produce unotu
+sample_data(young)$test = factor(sample_data(young)$test, levels = c("Control","UnfilteredWater","USArock","USAadult","BBEZadults"))
+inta <- subset_samples(young, Treatment%in%c("BBEZadults","UnfilteredWater","USAadult","USAjuv","USArock","1Feed","2Feeds"))
+intaG <- tax_glom(inta, taxrank="Genus") # glom OTUs at the Genus level
+intaPr <- subset_taxa(intaG, Genus%in%c(as.character(unotu)))
+intaT <- transform_sample_counts(intaPr, function(x) x/sum(x)) # get abundance in %
+ssint <- subset_taxa(intaT, Genus%in%c(as.character(unotu)))
+#ssint <- subset_samples(ssint, Treatment%in%c("USAjuv","USAadult","BBEZadults"))
+
+ph <- as.character(get_taxa_unique(ssint, "Phylum")) # compile list of phyla to examine
+
+for (p in c(ph)){
+  sscPh <- subset_taxa(ssint, Phylum%in%c(p))
+  if(ntaxa(sscPh)>4){
+    wpng = ntaxa(sscPh) # if more than 4 taxa, plot width will be 1in/taxon
+  } else{
+    wpng = ntaxa(sscPh) + 1 # if less than 4 taxa, plot will be 1in/taxon + 1in
+  }
+
+  dat <- psmelt(sscPh) # create dataframe from phyloseq object
+  dat$Genus <- as.character(dat$Genus) # convert Genus to a character vector from a factor because R
+  
+# VERTICAL boxplot + log y-scale + facet by age + x-labels vertical
+  plot <- ggplot(dat, aes(x=Treatment, y=Abundance, fill=Treatment)) + 
+    ggtitle(paste(p,"determinant taxa")) + 
+    geom_boxplot() +
+    scale_y_log10(limits=c(.001,1)) + 
+    facet_grid(~Genus) + 
+    theme(strip.text=element_text(size=rel(.5)),axis.text.x=element_blank(),axis.title.x=element_blank()) 
+
+  ggsave(plot,filename=paste("plot",p,".png",sep=""),width=wpng,height=3)
+}
+
+#	#	#	#	#	#	#	

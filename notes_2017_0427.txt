@@ -1,0 +1,98 @@
+# To save space on HardDrive, I have stopped copying all files between process-date folders. Instead, one folder labeled "DataFiles" should be moved between processing folders. notes will be labeled with date and kept in a "Compiled_Rnotes" folder #
+
+library("phyloseq") #packageVersion("phyloseq")
+library("ggplot2") #packageVersion("ggplot2")
+library("ape") #packageVersion("ape")
+library("RColorBrewer")
+source("~/Masters/R_tools/taxa_summary",local=TRUE) # load fast_melt function
+
+setwd("~/Desktop/2017_0427/")
+
+system.time(load("DataFiles/physeq_2017_0411.RData")) # Use to re-load saved phyloseq data object
+
+########## Pre-process data ##########
+physeq5 <- prune_samples(sample_sums(physeq) > 5000, physeq) # keep only samples with > 5000 sequences
+physeqT <- transform_sample_counts(physeq5, function(x) x/sum(x)) # get abundance in %
+ILF <- subset_samples(physeqT, SampleSite%in%c("ILF","Albumen")) # Only look at ILF and albumen samples
+clean <- subset_samples(ILF, !MealLot1%in%c("S-N3095","15B52072")) # Remove samples from contaminated blood lots
+# isolate control H/J samples
+young <- subset_samples(clean, !Age%in%c("A"))
+y.con <- subset_samples(young, Treatment%in%c("Control","BBEZ_Control","USA_Control","1Feed","2Feeds")) 
+# remove Aeromonas-contaminated samples
+yAer<-subset_taxa(y.con,Family=="Aeromonadaceae")
+y.cl <- subset_samples(y.con, sample_sums(yAer)<=.01)
+
+adult <- subset_samples(clean,Age=="A")
+adult <- subset_samples(adult,!Source=="Wlot")
+# remove bladder-contaminated adult samples
+bladder <-subset_taxa(adult,Family%in%c("Comamonadaceae", "Sphingobacteriaceae", "Brucellaceae"))
+old = prune_samples(sample_sums(bladder)<=.1,adult)
+
+# isolate only control samples
+o.con <- subset_samples(old, !Treatment%in%c("Ana_Feed","Macro_Adults"))
+control <- merge_phyloseq(o.con, y.cl) # Implemented 12/4/16. Adults seem ~unaffected by juvenile interaction
+
+# Remove 'noise' OTus 
+mdt = fast_melt(control)
+prevdt = mdt[, list(Prevalence = sum(count > 0), 
+  TotalCounts = sum(count),
+  MinCounts = min(count),
+  MaxCounts = max(count)),
+  by = TaxaID] # make simple table listing 'SampleID, TaxaID, total count, Max, and Min' 
+prevdt$s = prevdt$M
+keepTaxa = prevdt[(Prevalence >= 3 & MaxCounts > .01), TaxaID] # Make list of OTUs to keep (cut-off determined 3/28 from histogram analysis)
+conPr = prune_taxa(keepTaxa, control) # Prune taxa from list
+levels(sample_data(conPr)$Da1F)=sort(as.numeric(levels(sample_data(conPr)$Da1F)),decreasing=FALSE) # force Da1F to be in numerical order
+
+
+############## Ordination/Beta Diversity #################
+#library("phyloseq") # should already be loaded
+#library("ggplot2") # should already be loaded
+library(vegan)
+library("plyr")
+
+conPr.ord = ordinate(conPr, method = "MDS", distance = "bray")
+plot_ordination(conPr, conPr.ord, type = "samples", color = "Age") + geom_point(size=5, alpha=0.75) + stat_ellipse(type = "t", level = 0.95, linetype = 2) # Add ellipse for 95% CI
+ # Currently supported method options are: c("DCA", "CCA", "RDA", "CAP", "DPCoA", "NMDS", "MDS", "PCoA")
+
+############## Heatmap #################
+conA<-subset_samples(conPr,Age=="A")
+
+# Remove 'noise' OTus 
+mdt = fast_melt(conA)
+prevdt = mdt[, list(Prevalence = sum(count > 0), 
+  TotalCounts = sum(count),
+  MinCounts = min(count),
+  MaxCounts = max(count)),
+  by = TaxaID] # make simple table listing 'SampleID, TaxaID, total count, Max, and Min' 
+prevdt$s = prevdt$M
+keepTaxa = prevdt[(Prevalence >= 3 & MaxCounts > .01), TaxaID] # Make list of OTUs to keep (cut-off determined 3/28 from histogram analysis)
+aPr = prune_taxa(keepTaxa, conA) # Prune taxa from list
+Fam<-tax_glom(aPr,taxrank="Family") # glom by Family
+
+h<-plot_heatmap(Fam, taxa.label ="Family", sample.label="Da1F",sample.order="Da1F") +
+  facet_grid(.~Source, scales="free", space="free")
+
+ggsave(h,filename="heatmap.png",width=8,height=4) # Save to output file
+
+# Still can't make heatmap plot in appropriate numerical order
+
+############## Alpha Diversity #################
+alpha<-subset_samples(physeq5,sample_names(physeq5)%in%c(as.character(sample_names(conPr))))
+
+plot_richness(alpha, x = "Age", color = "MealLot") + geom_boxplot()
+
+
+########## into Vegan ##########
+famA<-tax_glom(alpha,taxrank="Family") # glom by Family
+levels(sample_data(famA)$Da1F)=sort(as.numeric(levels(sample_data(famA)$Da1F)),decreasing=FALSE) # force Da1F to be in numerical order
+
+
+veganotu <- function(famA) {
+  OTU <- otu_table(famA)
+  if (taxa_are_rows(OTU)) {
+    OTU <- t(OTU)
+    }
+  return(as(OTU, "matrix"))
+  }
+

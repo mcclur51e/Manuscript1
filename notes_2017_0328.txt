@@ -1,0 +1,232 @@
+library("phyloseq") #packageVersion("phyloseq")
+library("ggplot2") #packageVersion("ggplot2")
+library("ape") #packageVersion("ape")
+setwd("~/Desktop/2017_0328/")
+
+taxdata <- read.csv("table_tax.csv", header = TRUE, row.names = 1) # reads csv file into data.frame with row names in column 1
+taxmat <- as.matrix.data.frame(taxdata) # reads data.frame into matrix without converting to numbers
+otudata <- read.csv("table_otu.csv", header = TRUE, row.names = 1)
+otumat <- as.matrix.data.frame(otudata)
+mapdata <- read.csv("table_map.csv", header = TRUE, row.names = 1)
+# mapmat <- as.matrix.data.frame(mapdata)
+OTU = otu_table(otumat, taxa_are_rows = TRUE)
+TAX = tax_table(taxmat)
+MAP = sample_data(data.frame(mapdata)) #######
+TREE = read.tree("Rep_Set_tree.tree")
+physeq = phyloseq(OTU, TAX, MAP, TREE)
+physeq5 <- prune_samples(sample_sums(physeq) > 5000, physeq) 
+
+########## Histogram of reads per sample ##########
+library("data.table") #packageVersion("data.table")
+
+sdt = data.table(as(sample_data(physeq5), "data.frame"), TotalReads = sample_sums(physeq5), keep.rownames = TRUE) # define new column for sample reads sum
+setnames(sdt, "rn", "SampleID")
+pSeqDepth = ggplot(sdt, aes(TotalReads)) + geom_histogram() + ggtitle("Sequencing Depth")
+pSeqDepth # plot histogram
+pSeqDepth + 
+   #facet_wrap(~Age) +
+   ggtitle("Sequence reads") + 
+   labs(y="Sample Count") 
+   #xlim(0, 50000)# plot histograms in separate panels by Age, only those sample with 0-50000 reads
+
+mean(sample_sums(physeq)) # Calculate mean reads count per sample
+########## Histogram of reads per sample ##########
+
+ggplot(sdt, aes(SampleSite, TotalReads, color = Age)) +
+   geom_point(size = 5) +
+   geom_smooth(method = lm) +
+   ggtitle("Change") +
+   scale_y_log10() +
+   facet_grid(Source ~ .)
+
+sdt[, min(TotalReads)] # determine the minimum number of reads/sample
+sdt[, max(TotalReads)] # determine the maximum number of reads/sample
+
+tdt = data.table(tax_table(physeq5), 
+   TotalCounts = taxa_sums(physeq5),
+   OTU = taxa_names(physeq5))
+
+ggplot(tdt, aes(TotalCounts)) + 
+  geom_histogram() + 
+  ggtitle("Histogram of Total Counts") # histogram showing 
+
+tdt[(TotalCounts <= 1), .N] # count number of OTUs with only 1 read
+# # # Result = 3316, so there are tons of OTUs that are only represented once in the dataset. No wonder raw bar plots have been such a mess!
+
+taxcumsum = tdt[, .N, by = TotalCounts]
+setkey(taxcumsum, TotalCounts)
+taxcumsum[, CumSum := cumsum(N)]
+pCumSum = ggplot(taxcumsum, aes(TotalCounts, CumSum)) + 
+   geom_point() +
+   xlab("Filtering Threshold, Minimum Total Counts") +
+   ylab("OTUs Filtered") +
+   ggtitle("OTUs that would be filtered vs. the minimum count threshold")
+pCumSum + xlim(0, 100) # Calculate how many OTUs would be filtered out at different minimum count thresholds
+
+source("~/Masters/R_tools/taxa_summary",local=TRUE) # load fast_melt function
+
+mdt = fast_melt(physeq5)
+prevdt = mdt[, list(Prevalence = sum(count > 0), 
+   TotalCounts = sum(count)),
+   by = TaxaID] # make simple table listing 'SampleID, TaxaID, and count' 
+ggplot(prevdt, aes(Prevalence)) + 
+   geom_histogram() + 
+   ggtitle("Histogram of Taxa Prevalence") # make histogram of prevalence data
+prevcumsum = prevdt[, .N, by = Prevalence]
+setkey(prevcumsum, Prevalence)
+prevcumsum[, CumSum := cumsum(N)]
+pPrevCumSum = ggplot(prevcumsum, aes(Prevalence, CumSum)) + 
+   geom_point() +
+   xlab("Filtering Threshold, Prevalence") +
+   ylab("OTUs Filtered") +
+   ggtitle("OTUs that would be filtered vs. the minimum count threshold")
+pPrevCumSum + xlim(0,50) # Calculate how many OTUs would be filtered out at different minimum count thresholds
+
+ggplot(prevdt, aes(Prevalence, TotalCounts)) + 
+  geom_point(size = 4, alpha = 0.75) + 
+  scale_y_log10() # Plot total counts vs. prevalence of OTUs
+
+addPhylum = unique(copy(mdt[, list(TaxaID, Phylum)]))
+# Join by TaxaID
+setkey(prevdt, TaxaID)
+setkey(addPhylum, TaxaID)
+prevdt <- addPhylum[prevdt]
+showPhyla = prevdt[, sum(TotalCounts), by = Phylum][order(-V1)][1:9]$Phylum
+setkey(prevdt, Phylum)
+ggplot(prevdt[showPhyla], 
+   mapping = aes(Prevalence, TotalCounts, color = Phylum)) + 
+   geom_point(size = 4, alpha = 0.75) + 
+   scale_y_log10()
+
+
+# # # Determined that OTU curve starts to level ~10 reads. Will use 100 as TotalCounts cut-off. n for experiments is always at least 3, so will use this as Prevalence cut-off
+keepTaxa = prevdt[(Prevalence >= 3 & TotalCounts > 100), TaxaID] # Make list of OTUs to keep
+mpf1 = prune_taxa(keepTaxa, physeq5) # Prune taxa from list
+
+########## Prepare taxonomic tree ##########
+tipg = tip_glom(mpf1, h = 0.05) # agglomerate closely-related taxa to simplify tree
+tipg <- transform_sample_counts(tipg, function(x) x / sum(x))
+ntaxa(tipg)
+
+tipg2 <- subset_samples(tipg, Age%in%c("A","C","H"))
+plot_tree(tipg2, size = "Abundance",
+   color = "Age",
+   justify = "yes please", 
+   ladderize = "left") +
+   scale_size_continuous(range = c(1, 3))
+########## Prepare taxonomic tree ##########
+
+
+########## Beta-diversity ##########
+# working phyloseq dataset = betaD
+
+keepTaxa = betaD[(Prevalence >= 3 & TotalCounts > 100), TaxaID] # Make list of OTUs to keep
+mpra = transform_sample_counts(betaD, function(x) x / sum(x))
+mpraf = prune_taxa(keepTaxa, mpra)
+
+DistBC = phyloseq::distance(mpraf, method = "bray")
+DistUF = phyloseq::distance(mpraf, method = "wUniFrac")
+
+ordBC = ordinate(mpraf, method = "PCoA", distance = DistBC) 
+ordUF = ordinate(mpraf, method = "PCoA", distance = DistUF)
+
+plot_scree(ordBC, "Scree Plot: Bray-Curtis MDS")
+plot_scree(ordUF, "Scree Plot: Weighted UniFrac MDS")
+
+plot_ordination(mpraf, ordBC, color = "Age") + 
+   geom_point(size=3, mapping = aes(shape = Source)) +
+   ggtitle("PCoA: Bray-Curtis")
+
+plot_ordination(mpraf, ordUF, color = "Age") + 
+   geom_point(size=3, mapping = aes(shape = Source)) +
+   ggtitle("PCoA: Weigthed Unifrac")
+########## Beta-diversity ##########
+
+bgr <- subset_samples(tipg2, Treatment%in%c("1Feed","2Feeds"))
+
+plot_tree(bgr, size = "Abundance",
+   color = "Treatment",
+   justify = "yes please", 
+   ladderize = "left") +
+   scale_size_continuous(range = c(1, 3))
+# # # No immediately obvious OTU difference
+
+########## Albumen Color Analysis ##########
+color <- subset_samples(physeq5,Age=="C")
+sample_data(color)$Healthy = factor( get_variable(color, "AlbumenColor") %in% c("tan", "white", "lt.yellow") )
+color2 <- subset_samples(color,!RunDate=="2016_0316")
+
+tdt = data.table(tax_table(color2), 
+   TotalCounts = taxa_sums(color2),
+   OTU = taxa_names(color2))
+tdt[(TotalCounts <= 1), .N] # 20828
+
+colorM = fast_melt(color2)
+prevColor = colorM[, list(Prevalence = sum(count > 0), 
+   TotalCounts = sum(count)),
+   by = TaxaID] # make simple table listing 'SampleID, TaxaID, and count' 
+keepTaxa = prevdt[(Prevalence >= 3 & TotalCounts > 100), TaxaID] # Make list of OTUs to keep
+
+prevcumsum = prevColor[, .N, by = Prevalence]
+
+setkey(prevcumsum, Prevalence)
+prevcumsum[, CumSum := cumsum(N)]
+pPrevCumSum = ggplot(prevcumsum, aes(Prevalence, CumSum)) + 
+   geom_point() +
+   xlab("Filtering Threshold, Prevalence") +
+   ylab("OTUs Filtered") +
+   ggtitle("OTUs that would be filtered vs. the minimum count threshold")
+pPrevCumSum + xlim(0,100) # Calculate how many OTUs would be filtered out at different minimum count thresholds
+### Count threshold = 10
+
+keepTaxa = prevdt[(Prevalence >= 3 & TotalCounts > 10), TaxaID] # Make list of OTUs to keep
+colorp = prune_taxa(keepTaxa, color) # remove taxa that are not in keepTaxa list
+colorfam <- tax_glom(colorp, taxrank = "Family") # agglomerate OTUs by family
+colort = transform_sample_counts(colorfam, function(x) x / sum(x)) # transform count data to percentage
+
+most_abundant_taxa <- sort(taxa_sums(colort), TRUE)[1:25] # Identify 10 most abundant taxa
+prune <- prune_taxa(names(most_abundant_taxa),colort) # Create a subset of data including only most abundant taxa
+
+plot_bar(prune,fill="Class",facet_grid=~Healthy,x="Number")
+
+gam <- subset_taxa(prune, Phylum == "Proteobacteria") # subset of Proteobacteria OTUs
+plot_bar(gam,fill="Family",facet_grid=~Healthy,x="Number")
+
+bac <- subset_taxa(prune, Phylum == "Bacteroidetes") # subset of Bacteroidetes OTUs
+plot_bar(bac,fill="Family",facet_grid=~Healthy,x="Number")
+
+plot_richness(color2, x = "Healthy", color = "Source") + geom_boxplot()
+### BBEZ > a-diversity than UConn
+### Healthy slightly > a-diversity than dark
+
+library("plyr")
+
+dat <- psmelt(prune) # create dataframe from phyloseq object
+dat$Family <- as.character(dat$Family) # convert Family to a character vector from a factor because R
+ggplot(dat, aes(x=Healthy, y=Abundance, color=Phylum)) + ggtitle("cocoons") + geom_boxplot() + scale_y_log10() + facet_grid(~Order) + theme(axis.text.x=element_text(angle = -90, hjust = 0)) #
+
+########## Albumen Color Analysis ##########
+
+########## Halomonas count as color scale in NMDS ##########
+library("data.table") #packageVersion("data.table")
+
+juv <- subset_samples(physeq, Age=="J")
+juvG <- tax_glom(juv, taxrank = "Family") # agglomerate OTUs by family
+trim <- subset_taxa(juvG,Family=="Halomonadaceae") # make phyloseq object with only Halomonadaceae
+taxa_names(trim) # determine the OTU id for Halomonadaceae
+sdt = data.table(as(sample_data(juvG), "data.frame"), HaloReads = get_sample(juvG,"denovo65689"), keep.rownames = TRUE) # create new column for HaloReads
+sample_data(juvG)$HaloReads = factor( get_variable(sdt, "HaloReads") ) # merge new column into original phyloseq object
+sample_variables(juvG) # confirm
+
+DistBC = phyloseq::distance(juvG, method = "bray") # calculate distances
+
+ordBC = ordinate(juvG, method = "PCoA", distance = DistBC) # calculate ordination
+
+plot_ordination(juvG, ordBC, color = "HaloReads") + 
+   geom_point(size=3, mapping = aes(shape = Source)) +
+   ggtitle("PCoA: Bray-Curtis") +
+   scale_colour_hue(h=c(0, 120))
+########## Halomonas count as color scale in NMDS ##########
+
+
+

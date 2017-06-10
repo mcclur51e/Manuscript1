@@ -1,0 +1,155 @@
+# To save space on HardDrive, I have stopped copying all files between process-date folders. Instead, one folder labeled "DataFiles" should be moved between processing folders. notes will be labeled with date and kept in a "Compiled_Rnotes" folder #
+
+library("phyloseq") #packageVersion("phyloseq")
+library("ggplot2") #packageVersion("ggplot2")
+library("ape") #packageVersion("ape")
+setwd("~/Desktop/2017_0330/")
+
+system.time(load("DataFiles/physeq_2017_0329.RData")) # Use to re-load saved phyloseq data object
+
+physeq5 <- prune_samples(sample_sums(physeq) > 5000, physeq) # keep only samples with > 5000 sequences
+physeqG <- tax_glom(physeq5, taxrank="Genus") # glom OTUs at the Genus level
+
+ILF <- subset_samples(physeqG, SampleSite%in%c("ILF","Albumen")) # Only look at ILF and albumen samples
+clean0 <- subset_samples(ILF, !MealLot1%in%c("S-N3095","15B52072")) # Remove samples from contaminated blood lots
+clean <- subset_samples(clean0, !MealLot2%in%c("S-N3095","15B52072")) # Remove samples from contaminated blood lots
+old <- subset_samples(clean, Age%in%c("A")) # subset the adults 
+young <- subset_samples(clean, !Age%in%c("A")) # subset the cocoons, hatchlings, and juveniles
+o.con <- subset_samples(old, !Treatment%in%c("Ana_Feed","Macro_Adults")) # control group includes all adults except those fed Anaplasma and Macrobdella
+y.con <- subset_samples(young, Treatment%in%c("Control","Cocoon","1Feed","2Feeds","Cocoon")) # control juveniles, hatchlings, and cocoons
+control <- merge_phyloseq(o.con, y.con) # Create master control group
+
+adult <- subset_samples(control, Age=="A") # subset out adults
+juv <- subset_samples(control, Age=="J") # subset out juveniles
+hatch <- subset_samples(control, Age=="H") # subset out hatchlings
+coc <- subset_samples(control, Age=="C") # subset out cocoons
+
+ac <- subset_samples(control, Age%in%c("A","C")) # create group to compare adults and cocoons
+ah <- subset_samples(control, Age%in%c("A","H")) # create group to compare adults and hatchlings
+aj <- subset_samples(control, Age%in%c("A","J")) # create group to compare adults and juveniles
+jh <- subset_samples(control, Age%in%c("J","H")) # create group to compare juveniles and hatchlings
+
+########## log2fold Change ##########
+library("ggplot2") #packageVersion("ggplot2")
+library("DESeq2") #packageVersion("DESeq2")
+# The DESeq2 model internally corrects for library size, so transformed or normalized values such as counts scaled by library size should not be used as input. #
+
+kostic <- ah # assign data to be processed
+diagddsraw = phyloseq_to_deseq2(kostic, ~ Age) # assign variable for comparing groups
+
+# calculate geometric means prior to estimate size factors
+gm_mean = function(x, na.rm=TRUE){exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))}
+geoMeans = apply(counts(diagddsraw), 1, gm_mean)
+diagdds = estimateSizeFactors(diagddsraw, geoMeans = geoMeans)
+diagdds2 = DESeq(diagdds, fitType="local")
+
+res = results(diagdds2)
+res = res[order(res$padj, na.last=NA), ]
+alpha = 0.01
+sigtab = res[(res$padj < alpha), ]
+sigtab = cbind(as(sigtab, "data.frame"), as(tax_table(kostic)[rownames(sigtab), ], "matrix"))
+head(sigtab)
+
+# Keep values with |log2FoldChange| > 5
+newdata <- sigtab[ which(sigtab$log2FoldChange > 5), ] # identify values >5
+newdata2 <- sigtab[ which(sigtab$log2FoldChange < -5), ] # identify values <5 
+sigtab <- rbind(newdata, newdata2) # combine identified values
+
+posigtab = sigtab[sigtab[, "log2FoldChange"] > 0, ]
+posigtab = posigtab[, c("baseMean", "log2FoldChange", "lfcSE", "padj", "Phylum", "Class", "Family", "Genus")]
+sigtabgen = subset(sigtab, !is.na(Genus))
+
+# Genus order
+x = tapply(sigtabgen$log2FoldChange, sigtabgen$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Genus = factor(as.character(sigtabgen$Genus), levels=names(x))
+
+ahG <- sigtabgen$Genus # save list of genera 
+### substitute to run for ah, aj, ac, and jh
+ahG
+ajG
+jhG
+acG
+
+genus.list <- c(as.character(ahG),
+   as.character(ajG),
+   as.character(acG),
+   as.character(jhG)  )
+ug <- unique(genus.list) # compiled list of genera to examine
+
+controlT <- transform_sample_counts(control, function(x) x/sum(x)) # get abundance in %
+
+ssc <- subset_taxa(controlT, Genus%in%c(ug))
+
+library("plyr")
+
+get_taxa_unique(ssc, "Phylum") # compile list of phyla to examine
+# Bacteroidetes, Firmicutes, Fusobacteria, Proteobacteria
+
+sscB <- subset_taxa(ssc, Phylum=="Bacteroidetes")
+sscFi <- subset_taxa(ssc, Phylum=="Firmicutes")
+sscFu <- subset_taxa(ssc, Phylum=="Fusobacteria")
+sscP <- subset_taxa(ssc, Phylum=="Proteobacteria")
+
+dat <- psmelt(sscB) # create dataframe from phyloseq object
+dat$Genus <- as.character(dat$Genus) # convert Genus to a character vector from a factor because R
+ggplot(dat, aes(x=Age, y=Abundance, fill=Age)) + ggtitle("determinant taxa") + geom_boxplot() + scale_y_log10() + facet_grid(~Genus) + theme(axis.text.x=element_text(angle = -90, hjust = 0)) # VERTICAL boxplot + log y-scale + facet by age + x-labels vertical
+
+### substitute to run for sscB,sscFi,sscFu,sscP
+
+#############################################
+library("DESeq2") #packageVersion("DESeq2")
+library("dplyr") #packageVersion("dplyr")
+library("structSSI") #packageVersion("structSSI")
+
+gl <- c(ac,ah,aj,jh)
+
+group <- ah
+for (group in c(gl)){
+  pslog <- transform_sample_counts(group, function(x) log(1 + x))
+  diagddsraw = phyloseq_to_deseq2(group, ~ Age) # assign variable for comparing groups
+
+  # calculate geometric means prior to estimate size factors
+  gm_mean = function(x, na.rm=TRUE){exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))}
+  geoMeans = apply(counts(diagddsraw), 1, gm_mean)
+  diagdds = estimateSizeFactors(diagddsraw, geoMeans = geoMeans)
+  diagdds2 = DESeq(diagdds, fitType="local")
+
+  ps_dds <- diagdds2
+  varianceStabilizingTransformation(ps_dds, blind = TRUE, fitType = "parametric")
+
+  ps_dds <- estimateSizeFactors(ps_dds, geoMeans=geoMeans)
+  ps_dds <- estimateDispersions(ps_dds)
+  abund <- getVarianceStabilizedData(ps_dds)
+
+  short_names <- substr(rownames(abund), 1, 5)%>%
+    make.names(unique = TRUE)
+  rownames(abund) <- short_names
+
+  el <- phy_tree(pslog)$edge
+  el0 <- el
+  el0 <- el0[nrow(el):1, ]
+  el_names <- c(short_names, seq_len(phy_tree(pslog)$Nnode))
+  el[, 1] <- el_names[el0[, 1]]
+  el[, 2] <- el_names[as.numeric(el0[, 2])]
+  unadj_p <- treePValues(el, abund, sample_data(pslog)$Age)
+
+  hfdr_res <- hFDR.adjust(unadj_p, el, .75)
+#  summary(hfdr_res)
+
+  options(width=100)
+  tax <- tax_table(pslog)[, c("Family", "Genus")] %>%
+    data.frame()
+  tax$seq <- short_names
+
+  hfdr_res@p.vals$seq <- rownames(hfdr_res@p.vals)
+  tax %>%
+    left_join(hfdr_res@p.vals) %>%
+    arrange(adjp) %>% head(10)
+}
+
+
+
+
+
+
