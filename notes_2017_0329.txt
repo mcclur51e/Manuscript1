@@ -1,0 +1,100 @@
+# To save space on HardDrive, I have stopped copying all files between process-date folders. Instead, one folder labeled "DataFiles" should be moved between processing folders. notes will be labeled with date and kept in a "Compiled_Rnotes" folder #
+
+library("phyloseq") #packageVersion("phyloseq")
+library("ggplot2") #packageVersion("ggplot2")
+library("ape") #packageVersion("ape")
+setwd("~/Desktop/2017_0329/")
+
+taxdata <- read.csv("DataFiles/table_tax.csv", header = TRUE, row.names = 1) # reads csv file into data.frame with row names in column 1
+taxmat <- as.matrix.data.frame(taxdata) # reads data.frame into matrix without converting to numbers
+otudata <- read.csv("DataFiles/table_otu.csv", header = TRUE, row.names = 1)
+otumat <- as.matrix.data.frame(otudata)
+mapdata <- read.csv("DataFiles/table_map.csv", header = TRUE, row.names = 1)
+# mapmat <- as.matrix.data.frame(mapdata)
+OTU = otu_table(otumat, taxa_are_rows = TRUE)
+TAX = tax_table(taxmat)
+MAP = sample_data(data.frame(mapdata)) #######
+TREE = read.tree("DataFiles/Rep_Set_tree.tree")
+physeq = phyloseq(OTU, TAX, MAP, TREE)
+save(physeq,file=("physeq_2017_0329.RData")) # This should save the phyloseq data object in a .RData file so that all of the initial loading is no longer required in future…
+# system.time(load("DataFiles/physeq_2017_0329.RData")) # Use to re-load the saved phyloseq data object
+
+physeq5 <- prune_samples(sample_sums(physeq) > 5000, physeq) 
+juv <- subset_samples(physeq, Age=="J")
+juvG <- tax_glom(juv, taxrank = "Family") # agglomerate OTUs by family
+
+########## OTU count as color scale in NMDS (nv = new variable) ##########
+library("data.table") #packageVersion("data.table")
+
+nvdata <- juvG # define phyloseq data set to be used for processing (must use tax_glom to phylogeny level you will use below OR define otuname outright)
+
+## Change Family=="Halomonadaceae" to OTU of interest ##
+trim <- subset_taxa(nvdata,Family=="Halomonadaceae") # make phyloseq object with only Halomonadaceae (should return error message 'prune_taxa attempted to reduce tree to 1 or fewer tips'
+otuname <- taxa_names(trim) # determine and store the OTU id
+nvsdt = data.table(as(sample_data(nvdata), "data.frame"), OTUReads = get_sample(nvdata,otuname), keep.rownames = TRUE) # create new column for HaloReads
+sample_data(nvdata)$OTUReads = factor( get_variable(nvsdt, "OTUReads") ) # merge new column into original phyloseq object
+sample_variables(nvdata) # confirm that OTUReads has been added as a sample_variable
+
+DistBC = phyloseq::distance(nvdata, method = "bray") # calculate distances
+ordBC = ordinate(nvdata, method = "PCoA", distance = DistBC) # calculate ordination
+plot_ordination(nvdata, ordBC, color = "OTUReads") + 
+   geom_point(size=3, mapping = aes(shape = Source)) +
+   ggtitle("PCoA: Bray-Curtis") +
+   scale_colour_hue(h=c(0, 120)) # plot ordination with OTU counts as color
+## If you want to repeat this analysis with a different OTU, you must reset nvdata first ##
+########## OTU count as color scale in NMDS ##########
+
+########## OTU count vs OTU % ##########
+library("data.table") #packageVersion("data.table")
+
+perdata <- tax_glom(physeq, taxrank = "Family") # assign phyloseq object. agglomerate OTUs by family (must use tax_glom to phylogeny level you will use OR define otuname outright)
+
+trim <- subset_taxa(perdata,Family=="Halomonadaceae") # make phyloseq object with only Halomonadaceae (should return error message 'prune_taxa attempted to reduce tree to 1 or fewer tips'
+otuname <- taxa_names(trim) # determine and store the OTU id
+
+trsdt = data.table(as(sample_data(perdata), "data.frame"), TotalReads = sample_sums(perdata), keep.rownames = TRUE) # create new column for total reads
+sample_data(perdata)$TotalReads = factor( get_variable(trsdt, "TotalReads") ) # add TotalReads column to phyloseq metadata
+trsdt = data.table(as(sample_data(perdata), "data.frame"), OTUreads = get_sample(perdata,otuname), keep.rownames = TRUE) # create new column for OTU Reads
+sample_data(perdata)$OTUreads = factor( get_variable(trsdt, "OTUreads") ) # add OTUreads column to phyloseq metadata
+trsdt = data.table(as(sample_data(perdata), "data.frame"), OTUper = get_sample(perdata,otuname)/sample_sums(perdata), keep.rownames = TRUE) # create new column for OTU Percentage
+sample_data(perdata)$OTUper = factor( get_variable(trsdt, "OTUper") ) # add OTUper column to phyloseq metadata
+
+pdp <- psmelt(perdata) # create dataframe from phyloseq object 
+pdp$OTUper <- as.numeric(as.character(pdp$OTUper)) # force variable to be (continuous) numeric
+pdp$TotalReads <- as.numeric(as.character(pdp$TotalReads)) # force variable to be (continuous) numeric
+ggplot(pdp, aes(x=TotalReads, y=OTUper)) + 
+   geom_point(size=3) +
+   scale_y_log10() # create scatter plot
+########## OTU count vs OTU % ##########
+
+
+
+
+########## NTC Analysis ##########
+source("~/Masters/R_tools/taxa_summary",local=TRUE) # load fast_melt function
+
+nt <- subset_samples(physeq, Treatment=="SeqControl")
+ntg <- tax_glom(nt,taxrank="Family")
+
+
+mdt = fast_melt(ntg)
+prevdt = mdt[, list(Prevalence = sum(count > 0), 
+   TotalCounts = sum(count)),
+   by = TaxaID] # make simple table listing 'SampleID, TaxaID, and count' 
+
+prevColor = mdt[, list(Prevalence = sum(count > 0), 
+   TotalCounts = sum(count)),
+   by = TaxaID] # make simple table listing 'SampleID, TaxaID, and count' 
+keepTaxa = prevdt[(Prevalence >= 1 & TotalCounts > 100), TaxaID] # Make list of OTUs to keep
+
+ntgp = prune_taxa(keepTaxa, ntg) 
+nttran = transform_sample_counts(ntgp, function(x) x / sum(x)) # transform count data to percentage
+plot_bar(nttran,fill="Class")
+
+yn <- subset_samples(nttran,Class="Gammaproteobacteria")
+plot_bar(yn,fill="Order")
+########## NTC Analysis ##########
+
+
+
+

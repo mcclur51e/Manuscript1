@@ -1,0 +1,100 @@
+# To save space on HardDrive, I have stopped copying all files between process-date folders. Instead, one folder labeled "DataFiles" should be moved between processing folders. notes will be labeled with date and kept in a "Compiled_Rnotes" folder #
+
+library("phyloseq") #packageVersion("phyloseq")
+library("ggplot2") #packageVersion("ggplot2")
+library("ape") #packageVersion("ape")
+library("RColorBrewer")
+source("~/Masters/R_tools/taxa_summary",local=TRUE) # load fast_melt function
+
+setwd("~/Desktop/2017_0424/")
+
+system.time(load("DataFiles/physeq_2017_0411.RData")) # Use to re-load saved phyloseq data object
+
+# sample_data(physeq) <- sample_data(data.frame(read.csv("DataFiles/table_map.csv",header=TRUE,row.names=1))) # use if map file has been modified
+
+
+########## Pre-process data ##########
+physeq5 <- prune_samples(sample_sums(physeq) > 5000, physeq) # keep only samples with > 5000 sequences
+physeqT <- transform_sample_counts(physeq5, function(x) x/sum(x)) # get abundance in %
+
+adult <- subset_samples(physeqT,Age=="A")
+adult <- subset_samples(adult,!Source=="Wlot")
+
+# Remove 'noise' OTus 
+mdt = fast_melt(adult)
+prevdt = mdt[, list(Prevalence = sum(count > 0), 
+  TotalCounts = sum(count),
+  MinCounts = min(count),
+  MaxCounts = max(count)),
+  by = TaxaID] # make simple table listing 'SampleID, TaxaID, total count, Max, and Min' 
+prevdt$s = prevdt$M
+keepTaxa = prevdt[(Prevalence >= 3 & MaxCounts > .01), TaxaID] # Make list of OTUs to keep (cut-off determined 3/28 from histogram analysis)
+adultPr = prune_taxa(keepTaxa, adult) # Prune taxa from list
+
+write.table(as.data.frame(tax_table(adultPr)), file="adult_otus.csv", sep=",")
+
+adultF <- tax_glom(adultPr, taxrank = "Family")
+melPr <- psmelt(adultF)
+
+# Remove adult samples with bladder contamination
+
+bladder <-subset_taxa(adultF,Family%in%c("Comamonadaceae", "Sphingobacteriaceae", "Brucellaceae"))
+ilfPr = prune_samples(sample_sums(bladder)<=.1,adultF)
+
+sample_data(ilfPr)$Da1F = factor(sample_data(ilfPr)$Da1F, levels = c(0,1,2,4,7,76,82,90,92,94,96,97,101,112,118,130,165,166,167,169,172,193)) # Reorder Da1F
+
+############## Heatmap #################
+plot_heatmap(ilfPr, taxa.label ="Family", sample.label="Source", na.value="white")
+
+############## Remove J/H high Aeromonas Outliers #################
+young<-subset_samples(physeqT,Age%in%c("H","J"))
+yCon<-subset_samples(young,Treatment%in%c("Control","1Feed","2Feeds"))
+yFam<-tax_glom(yCon,taxrank="Family")
+yAer<-subset_taxa(yFam,Family=="Aeromonadaceae")
+yDirty=prune_samples(sample_sums(yAer)>=.01,yFam)
+y<-c(as.character(sample_names(yDirty)))
+yClean<-subset_samples(yFam,!sample_names(yFam)%in%c(y))
+
+############## Ordination/Beta Diversity #################
+#library("phyloseq") # should already be loaded
+#library("ggplot2") # should already be loaded
+library(vegan)
+library("plyr")
+
+young.ord = ordinate(yClean, method = "MDS", distance = "bray")
+plot_ordination(yClean, young.ord, type = "samples", color = "Age") + geom_point(size = 5) # Currently supported method options are: c("DCA", "CCA", "RDA", "CAP", "DPCoA", "NMDS", "MDS", "PCoA")
+
+ILF <- subset_samples(physeq5, SampleSite%in%c("ILF","Albumen")) # Only look at ILF and albumen samples
+clean <- subset_samples(ILF, !MealLot1%in%c("S-N3095","15B52072")) # Remove samples from contaminated blood lots
+young <- subset_samples(clean, !Age%in%c("A"))
+old <- subset_samples(clean, Age%in%c("A")) 
+# control <- subset_samples(clean, Treatment%in%c("Control","BBEZ_Control","USA_Control")) # Remove any environmental interacting samples
+o.con <- subset_samples(old, !Treatment%in%c("Ana_Feed","MacroAdult","MacroAdults"))
+y.con <- subset_samples(young, Treatment%in%c("Control","BBEZ_Control","USA_Control","1Feed","2Feeds")) 
+control <- merge_phyloseq(o.con, y.con) # Implemented 12/4/16. Adults seem ~unaffected by juvenile interaction
+
+clean<-subset_samples(control,!sample_names(control)%in%c(y))
+control.ord = ordinate(control, method = "MDS", distance = "bray")
+plot_ordination(control, control.ord, type = "samples", color = "Age") + geom_point(size = 5) # Currently supported method options are: c("DCA", "CCA", "RDA", "CAP", "DPCoA", "NMDS", "MDS", "PCoA")
+
+# Need to modify map file, both MacroAdult and MacroAdults present #
+
+
+########## Find outlier adults ##########
+clip<-subset_taxa(adult, Phylum=="Bacteroidetes")
+most_abundant_taxa <- sort(taxa_sums(clip), TRUE)[1:25] 
+prune <- prune_taxa(names(most_abundant_taxa),clip)
+plot_bar(prune,fill="Family")
+
+# Possibly Chitinophagaceae or Sphingobacteriaceae
+chit<-subset_taxa(adult,Family=="Chitinophagaceae")
+adul2<-subset_samples(adult,sample_sums(chit)<=.01)
+
+
+##################
+
+install.packages("RColorBrewer")
+library(RColorBrewer)
+colorRampPalette(colors=c("yellow","red"))(5)
+
+

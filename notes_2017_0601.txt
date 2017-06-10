@@ -1,0 +1,57 @@
+library("phyloseq") #packageVersion("phyloseq")
+library("ggplot2") #packageVersion("ggplot2")
+library("ape") #packageVersion("ape")
+library("RColorBrewer")
+source("~/Masters/R_tools/taxa_summary",local=TRUE) # load fast_melt function
+
+setwd("~/Desktop/2017_0601/")
+
+load("DataFiles/physeq_2017_0530.RData") # Use to re-load saved phyloseq data object
+
+##### Pre-process data #####
+physeq10<-subset_samples(physeq,sample_sums(physeq)>=10000) # keep samples with >=10000 reads
+
+# Remove 'noise' OTus 
+mdt = fast_melt(physeq10)
+prevdt = mdt[, list(Prevalence = sum(count > 0), 
+  TotalCounts = sum(count),
+  MinCounts = min(count),
+  MaxCounts = max(count)),
+  by = TaxaID] # make simple table listing 'SampleID, TaxaID, total count, Max, and Min' 
+keepTaxa = prevdt[(Prevalence >= 2 & MaxCounts > .01), TaxaID] # Make list of OTUs to keep (cut-off determined 3/28 from histogram analysis)
+
+physeqPR<-prune_taxa(keepTaxa,physeq10) # keep taxa that make 'noise' cut-off
+physeqG<-tax_glom(physeqPR,taxrank="Genus") # glom by Genus
+physeqT<-transform_sample_counts(physeqG, function(x) x/sum(x)) # get abundance in %
+
+# Remove Halomonas-contaminated samples #
+pHalo<-subset_taxa(physeqT, Family=="Halomonadaceae") # make phyloseq object with only Halomonadaceae
+physeqH<-subset_samples(physeqT,sample_sums(pHalo)<=.005) # keep samples with <= 1% Halomonadaceae
+
+# Remove Anaplasma-contaminated samples #
+pAna<-subset_taxa(physeqT,Family=="Anaplasmataceae") # make phyloseq object with only Anaplasmataceae
+physeqAn<-subset_samples(physeqH,sample_sums(pAna)<=.01) # keep samples with <= 1% Anaplasmataceae
+
+pAdult<-subset_samples(physeqAn,Age=="A") # keep all adult samples
+
+pHirudo<-subset_samples(pAdult,!Source=="Wlot") # Keep Hirudo adults
+
+
+pH1<-subset_taxa(pHirudo,taxa_sums(pHirudo)>=.01) # keep taxa that are at least 1% of 1 sample
+
+
+
+##### Delete < Halomonas #####
+
+mdt = fast_melt(physeq10)
+prevdt = mdt[, list(Prevalence = sum(count > 0), 
+  TotalCounts = sum(count),
+  MinCounts = min(count),
+  MaxCounts = max(count)),
+  by = TaxaID] # make simple table listing 'SampleID, TaxaID, total count, Max, and Min'
+
+
+
+
+
+##### Comcoatenate all data from Miseq -> search for 'core' microbes 

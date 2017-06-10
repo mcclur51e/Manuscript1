@@ -1,0 +1,36 @@
+library("phyloseq") #packageVersion("phyloseq")
+library("ggplot2") #packageVersion("ggplot2")
+library("ape") #packageVersion("ape")
+library("RColorBrewer")
+source("~/Masters/R_tools/taxa_summary",local=TRUE) # load fast_melt function
+
+setwd("~/Desktop/2017_0530/")
+
+system.time(load("DataFiles/physeq_2017_0509.RData")) # Use to re-load saved phyloseq data object
+sample_data(physeq) <- sample_data(data.frame(read.csv("DataFiles/table_map.csv",header=TRUE,row.names=1))) # changed map file to include "OriginalSample" column
+
+save(physeq,file=("DataFiles/physeq_2017_0530.RData")) # Save the phyloseq data object in a .RData file 
+
+
+##### Find sample with high Halomonas contamination. Will use to test new Halomonas primers #####
+physeqT <- transform_sample_counts(physeq, function(x) x/sum(x)) # get abundance in %
+halo <- subset_taxa(physeqT, Family == "Halomonadaceae") # create a physeq object with only Halomonadaceae OTUs
+plusHal = prune_samples(sample_sums(halo)>=.3, physeqT) # create a physeq object with samples with >30% Halomonas
+as.factor(sample_names(plusHal)) # print list of high Halomonas samples
+
+j0dF060814EMd.iD5 	D28    j0d2F071614EMc.iD45   	D28?c0dH021214EMz.aD92   	OUTFAj2d2F022115EMb.iD15 	OUTFAj4dF121114EMb.iD22  	OUTjR060814EMd.iD54     	OUTj0d2F071614EMb.iD22	OUT   j7d2F072314EMb.iD47	OUT    Blank295             	Blank307              	Frozen.15F207A271     	
+
+1
+FAj2dF120914EMc.iD23  	DNA5
+FAj4dF121114EMc.iD19  	DNA5
+AHj4dF121114EMb.iD9  	DNA8AHj4dF121114EMc.iD139 	DNA8
+AFj0d2F022815EMb.iD1 	DNA4BAa4dF110614EMc.iD100 	DNA4
+jR060814EMf.iD56     	D28j4dF060814EMc.iD17    	D282j7dF061114EMe.iD29   	D28 j1d2F071714EMf.uD141	D28  j1d2F071714EMf.iD135 	D28j2d2F071814EMb.iD9   	D28j2d2F071814EMc.iD11   	D28?
+j2d2F071814EMf.iD39  	D28j7d2F072314EMa.iD45   	D28j7d2F072314EMf.iD108  	D28##### Find cocoon samples with >10000 sequences #####
+coc<-subset_samples(physeq,Age=="C")
+coc10<-prune_samples(sample_sums(coc) > 10000, coc) # keep only samples with >5000 reads
+as.factor(sample_names(coc10)) 
+
+c0dH020614EMp.aD40c0dH021114EMw.aD90c0dH021714EMf.aD224c0dH031114EMa.aD96c0dH031114EMc.aD226c0dH031114EMd.aD227c0dH031114EMe.aD76c0dH031114EMf.aD229c0dH031114EMg.aD64c0dH031114EMh.aD231c0dH031114EMi.aD232c0dH031114EMj.aD233c0dH031514EMk.aD52c0dH061615EMe.aD325c0dH061615EMf.aD326c0dH061615EMg.aD328c0dH061615EMh.aD327c0dH061615EMj.aD324c0dH062115EMb.aD322c0dH062115EMc.aD323c0dH082316EMb.aD316c0dH082316EMc.aD317c0dH082316EMd.aD318c0dH082316EMf.aD319c0dH082316EMg.aD320c0dH082316EMh.aD321c0dH091514EMbS2c0dH091514EMbT1c0dH111813EMb.aD149c0dH111813EMd.aD29c0dH112113EMa.aD33c0dH112113EMb.aD36c0dH112113EMc.aD67c0dH113013EMa.aD236c0dH120413EMb.aD237gC0dH091014EMaa.aD39gC0dH091014EMab.a40DgC0dH091014EMac.aD41gC0dH091014EMba.aD42gC0dH091114EMbb.aD43gC0dH091114EMbc.aD44
+
+
